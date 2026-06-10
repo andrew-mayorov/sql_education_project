@@ -1,0 +1,156 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "353a5307",
+   "metadata": {},
+   "source": [
+    "# Задача 12. ABC-анализ товаров по выручке\n",
+    "\n",
+    "**Постановка задачи:** нужно разделить товары на группы ABC по вкладу в выручку:\n",
+    "\n",
+    "- `A` — товары, которые суммарно дают первые 80% выручки;\n",
+    "- `B` — следующие 15%;\n",
+    "- `C` — оставшиеся 5%.\n",
+    "\n",
+    "В решении использовать оконные функции и накопительную долю выручки. В расчёт брать доставленные заказы."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "7a8580e4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import sqlite3\n",
+    "from pathlib import Path\n",
+    "\n",
+    "import pandas as pd\n",
+    "\n",
+    "DB_PATH = Path('../data/marketplace.sqlite')\n",
+    "conn = sqlite3.connect(DB_PATH)\n",
+    "\n",
+    "pd.set_option('display.max_columns', 50)\n",
+    "pd.set_option('display.float_format', '{:,.2f}'.format)\n",
+    "\n",
+    "print(f'База подключена: {DB_PATH.resolve()}')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "525fd4b0",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "query = r\"\"\"\n",
+    "WITH product_revenue AS (\n",
+    "    SELECT\n",
+    "        p.product_id,\n",
+    "        p.product_name,\n",
+    "        p.category,\n",
+    "        SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct / 100.0)) AS revenue\n",
+    "    FROM orders o\n",
+    "    JOIN order_items oi ON o.order_id = oi.order_id\n",
+    "    JOIN products p ON oi.product_id = p.product_id\n",
+    "    WHERE o.status = 'delivered'\n",
+    "    GROUP BY p.product_id, p.product_name, p.category\n",
+    "), abc_base AS (\n",
+    "    SELECT\n",
+    "        *,\n",
+    "        SUM(revenue) OVER () AS total_revenue,\n",
+    "        SUM(revenue) OVER (ORDER BY revenue DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_revenue\n",
+    "    FROM product_revenue\n",
+    "), abc_segmented AS (\n",
+    "    SELECT\n",
+    "        product_id,\n",
+    "        product_name,\n",
+    "        category,\n",
+    "        revenue,\n",
+    "        cumulative_revenue / total_revenue AS cumulative_share,\n",
+    "        CASE\n",
+    "            WHEN cumulative_revenue / total_revenue <= 0.80 THEN 'A'\n",
+    "            WHEN cumulative_revenue / total_revenue <= 0.95 THEN 'B'\n",
+    "            ELSE 'C'\n",
+    "        END AS abc_group\n",
+    "    FROM abc_base\n",
+    ")\n",
+    "SELECT\n",
+    "    abc_group,\n",
+    "    COUNT(product_id) AS products,\n",
+    "    ROUND(SUM(revenue), 2) AS revenue,\n",
+    "    ROUND(100.0 * SUM(revenue) / (SELECT SUM(revenue) FROM abc_segmented), 2) AS revenue_share_pct\n",
+    "FROM abc_segmented\n",
+    "GROUP BY abc_group\n",
+    "ORDER BY abc_group;\n",
+    "\"\"\"\n",
+    "\n",
+    "df = pd.read_sql_query(query, conn)\n",
+    "df"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "fb135fb4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Покажу первые товары группы A — это главные товары по выручке\n",
+    "detail_query = r'''\n",
+    "WITH product_revenue AS (\n",
+    "    SELECT\n",
+    "        p.product_id,\n",
+    "        p.product_name,\n",
+    "        p.category,\n",
+    "        SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct / 100.0)) AS revenue\n",
+    "    FROM orders o\n",
+    "    JOIN order_items oi ON o.order_id = oi.order_id\n",
+    "    JOIN products p ON oi.product_id = p.product_id\n",
+    "    WHERE o.status = 'delivered'\n",
+    "    GROUP BY p.product_id, p.product_name, p.category\n",
+    "), abc_base AS (\n",
+    "    SELECT\n",
+    "        *,\n",
+    "        SUM(revenue) OVER () AS total_revenue,\n",
+    "        SUM(revenue) OVER (ORDER BY revenue DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_revenue\n",
+    "    FROM product_revenue\n",
+    ")\n",
+    "SELECT\n",
+    "    product_id,\n",
+    "    product_name,\n",
+    "    category,\n",
+    "    ROUND(revenue, 2) AS revenue,\n",
+    "    ROUND(100.0 * cumulative_revenue / total_revenue, 2) AS cumulative_share_pct\n",
+    "FROM abc_base\n",
+    "WHERE cumulative_revenue / total_revenue <= 0.80\n",
+    "ORDER BY revenue DESC\n",
+    "LIMIT 15;\n",
+    "'''\n",
+    "pd.read_sql_query(detail_query, conn)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "10081001",
+   "metadata": {},
+   "source": [
+    "**Комментарий стажёра:** ABC-анализ показывает, на каких товарах держится основная выручка. Эти товары обычно стоит контролировать по наличию, цене и доставке."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.11"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
